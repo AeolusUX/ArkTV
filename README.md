@@ -7,16 +7,31 @@ ArkTV is a lightweight, terminal-based IPTV player for Linux devices, built with
 - Channel selection via `dialog` menu
 - Fullscreen streaming with `mpv`
 - Joystick/gamepad support via `gptokeyb`
-- Auto-installs dependencies (`mpv`, `dialog`, `jq`, `curl`)
-- Fetches channel lists from a JSON file hosted on GitHub
+- Auto-installs dependencies (`mpv`, `dialog`, `jq`, `curl`, `python3`)
+- Fetches and validates channel lists from a JSON file hosted on GitHub (rejects entradas sem `name`/`url` válidos)
+- Importa playlists M3U/M3U8 diretamente pelo menu e converte para JSON local automaticamente
+
+## Requirements
+- Ambiente ArkOS ou qualquer distribuição com `systemd` ativo (o script inicia/para `mpv.service`)
+- Acesso root (para instalar dependências, ajustar fontes do console e habilitar `/dev/uinput`)
+- Conexão com a internet e os binários `curl`, `mpv`, `jq`, `dialog`, `python3`
 
 ## Installation
 1. Download or copy the `ArkTV.sh` script.
 2. Place it in your device's **tools** or **ports** folder.
 3. Run the script to install dependencies and start ArkTV.
 
+## Importando uma Playlist M3U
+1. Inicie o `ArkTV.sh`.
+2. No menu principal escolha `Importar playlist M3U`.
+3. Informe uma URL HTTP/HTTPS ou um caminho local para o arquivo `.m3u` ou `.m3u8`.
+4. O script Python `scripts/m3u_to_json.py` fará o download, validará `#EXTM3U/#EXTINF` e criará ` /tmp/arktv_custom_channels.json`.
+5. A lista importada assume o lugar da lista padrão imediatamente. Use a opção `Voltar à lista padrão` para retornar ao JSON oficial.
+
+> Dica: `tests/validate_m3u.sh` demonstra a conversão usando a playlist de exemplo `channels/sample_playlist.m3u`.
+
 ## Modifying the Channel List
-ArkTV uses a JSON file hosted on GitHub to define channels. To customize it:
+ArkTV uses a JSON file hosted on GitHub to define channels. To customize it manualmente:
 
 1. **Fork the Repository**:
    - Visit the [ArkTV GitHub repository](https://github.com/AeolusUX/ArkTV).
@@ -50,7 +65,7 @@ ArkTV uses a JSON file hosted on GitHub to define channels. To customize it:
    - Run ArkTV to verify the updated channel list.
    - Backup the original JSON file before editing.
 
-**Note**: Ensure URLs are valid to avoid streaming issues. Use a JSON editor or script for bulk changes.
+**Note**: ArkTV baixa o JSON para um arquivo temporário via `curl -fsSL` e só monta o menu se todos os canais possuírem `name` e `url` HTTP/HTTPS válidos. Use um validador (ou o próprio `jq`) para detectar erros de sintaxe antes de subir mudanças.
 
 ## License
 ArkTV is licensed under the MIT License.  

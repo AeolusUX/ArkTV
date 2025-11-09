@@ -12,22 +12,49 @@ fi
 set -euo pipefail
 
 # --- Global Variables ---
-CURR_TTY="/dev/tty1"
+CURR_TTY="$(/usr/bin/tty 2>/dev/null || echo /dev/tty1)"
 MPV_SOCKET="/tmp/mpvsocket"
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-JSON_URL="https://raw.githubusercontent.com/AeolusUX/ArkTV/refs/heads/main/channels/channels.json"
-JSON_FILE="/tmp/channels.json"  # Temporary file for channels list
+DEFAULT_JSON_URL="https://raw.githubusercontent.com/AeolusUX/ArkTV/refs/heads/main/channels/channels.json"
+JSON_URL="$DEFAULT_JSON_URL"
+JSON_FILE=""
+CUSTOM_JSON_PATH="/tmp/arktv_custom_channels.json"
+CLEANED_UP=0
 
 # --- Functions ---
 
-ExitMenu() {
-    rm -f "$JSON_FILE"
-    printf "\033c" > "$CURR_TTY"
-    printf "\e[?25h" > "$CURR_TTY" # Show cursor again
-    if [[ ! -e "/dev/input/by-path/platform-odroidgo2-joypad-event-joystick" ]]; then
-        setfont /usr/share/consolefonts/Lat7-Terminus20x10.psf.gz
+use_default_channel_list() {
+    CHANNEL_SOURCE="remote"
+    JSON_URL="$DEFAULT_JSON_URL"
+    JSON_FILE=""
+}
+
+cleanup() {
+    if [[ $CLEANED_UP -eq 1 ]]; then
+        return
     fi
-    pkill -f "gptokeyb -1 arktv.sh" || true
+    CLEANED_UP=1
+
+    if [[ $CHANNEL_SOURCE == "remote" ]]; then
+        [[ -n "$JSON_FILE" && -f "$JSON_FILE" ]] && rm -f "$JSON_FILE"
+    fi
+
+    if [[ -w "$CURR_TTY" ]]; then
+        printf "\033c" > "$CURR_TTY"
+        printf "\e[?25h" > "$CURR_TTY" # Show cursor again
+    fi
+
+    if [[ ! -e "/dev/input/by-path/platform-odroidgo2-joypad-event-joystick" ]]; then
+        [[ -f /usr/share/consolefonts/Lat7-Terminus20x10.psf.gz ]] && setfont /usr/share/consolefonts/Lat7-Terminus20x10.psf.gz
+    fi
+
+    pkill -f "gptokeyb -1 ArkTV.sh" >/dev/null 2>&1 || pkill -f "gptokeyb -1 arktv.sh" >/dev/null 2>&1 || true
+
+    manage_mpv_service stop
+}
+
+ExitMenu() {
+    cleanup
     exit 0
 }
 
@@ -47,7 +74,7 @@ check_and_install_dependencies() {
     fi
 
     local missing=()
-    for cmd in mpv dialog jq curl; do
+    for cmd in mpv dialog jq curl python3; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -66,19 +93,108 @@ check_and_install_dependencies() {
 }
 
 fetch_json_file() {
-    if ! curl -s -o "$JSON_FILE" "$JSON_URL"; then
-        dialog --msgbox "Error: Failed to download channel list." 6 50 > "$CURR_TTY"
+    if [[ -z "$JSON_FILE" || "$CHANNEL_SOURCE" != "remote" ]]; then
+        if ! JSON_FILE="$(mktemp /tmp/arktv_channels.XXXXXX)"; then
+            dialog --msgbox "Error: Failed to allocate temporary file for channels." 6 60 > "$CURR_TTY"
+            ExitMenu
+        fi
+    fi
+
+    local tmp_file
+    if ! tmp_file="$(mktemp /tmp/arktv_channels_download.XXXXXX)"; then
+        dialog --msgbox "Error: Unable to create download buffer." 6 60 > "$CURR_TTY"
         ExitMenu
     fi
+
+    if ! curl -fsSL \
+        --connect-timeout 5 \
+        --max-time 20 \
+        --retry 2 \
+        --retry-delay 1 \
+        --output "$tmp_file" \
+        "$JSON_URL"; then
+        rm -f "$tmp_file"
+        dialog --msgbox "Error: Failed to download channel list." 6 55 > "$CURR_TTY"
+        ExitMenu
+    fi
+
+    mv -f "$tmp_file" "$JSON_FILE"
+}
+
+prepare_channel_file() {
+    if [[ "$CHANNEL_SOURCE" == "custom" ]]; then
+        if [[ -f "$CUSTOM_JSON_PATH" ]]; then
+            JSON_FILE="$CUSTOM_JSON_PATH"
+            return 0
+        fi
+        dialog --msgbox "Custom channel list not found. Falling back to default list." 6 60 > "$CURR_TTY"
+        use_default_channel_list
+    fi
+
+    fetch_json_file
+}
+
+trim_string() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+import_playlist_dialog() {
+    local playlist_url status
+    set +e
+    playlist_url=$(dialog --inputbox "Informe a URL da playlist M3U/M3U8:" 10 70 2>"$CURR_TTY")
+    status=$?
+    set -e
+
+    if (( status != 0 )); then
+        return 1
+    fi
+
+    playlist_url="$(trim_string "$playlist_url")"
+
+    if [[ -z "$playlist_url" ]]; then
+        dialog --msgbox "Nenhuma URL informada." 6 50 > "$CURR_TTY"
+        return 1
+    fi
+
+    dialog --infobox "Importando playlist...\nIsso pode levar alguns segundos." 5 60 > "$CURR_TTY"
+
+    local output
+    if ! output="$(python3 "$SCRIPT_DIR/scripts/m3u_to_json.py" "$playlist_url" -o "$CUSTOM_JSON_PATH" 2>&1)"; then
+        dialog --msgbox "Erro ao importar playlist:\n${output}" 8 60 > "$CURR_TTY"
+        return 1
+    fi
+
+    CHANNEL_SOURCE="custom"
+    JSON_FILE="$CUSTOM_JSON_PATH"
+
+    dialog --msgbox "Playlist importada com sucesso!\nSelecione novamente para carregar os canais." 7 60 > "$CURR_TTY"
+    return 0
+}
+
+restore_default_playlist() {
+    use_default_channel_list
+    dialog --msgbox "Lista padrão restaurada." 5 45 > "$CURR_TTY"
 }
 
 check_json_file() {
-    fetch_json_file
+    prepare_channel_file
     if [[ ! -f "$JSON_FILE" ]]; then
         dialog --msgbox "Error: Channel list file missing." 6 50 > "$CURR_TTY"
         ExitMenu
     fi
-    if ! jq -e '.[] | select(.name and .url) | length' "$JSON_FILE" >/dev/null; then
+    if ! jq -e '
+        type == "array"
+        and length > 0
+        and all(.[];
+            (.name | type == "string")
+            and (.name | length > 0)
+            and (.url | type == "string")
+            and (.url | test("^https?://"))
+        )
+    ' "$JSON_FILE" >/dev/null; then
         dialog --msgbox "Error: Invalid JSON format in channel list." 6 50 > "$CURR_TTY"
         ExitMenu
     fi
@@ -87,6 +203,12 @@ check_json_file() {
 load_channels() {
     declare -gA CHANNELS
     CHANNEL_MENU_OPTIONS=()
+
+    CHANNEL_MENU_OPTIONS+=("IMPORT" "Importar playlist M3U")
+    if [[ "$CHANNEL_SOURCE" == "custom" ]]; then
+        CHANNEL_MENU_OPTIONS+=("RESET" "Voltar à lista padrão")
+    fi
+
     local index=1
     while IFS= read -r name && IFS= read -r url; do
         CHANNEL_MENU_OPTIONS+=("$index" "$name")
@@ -94,7 +216,19 @@ load_channels() {
         ((index++))
     done < <(jq -r '.[] | .name, .url' "$JSON_FILE")
 
+    if (( index == 1 )); then
+        dialog --msgbox "No channels available to display." 6 50 > "$CURR_TTY"
+        ExitMenu
+    fi
+
     CHANNEL_MENU_OPTIONS+=("0" "Exit")
+}
+
+manage_mpv_service() {
+    local action="$1"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl "$action" mpv.service >/dev/null 2>&1 || true
+    fi
 }
 
 play_channel() {
@@ -106,57 +240,79 @@ play_channel() {
     dialog --infobox "Starting channel: $name..." 3 50 > "$CURR_TTY"
     sleep 1
 
-    systemctl start mpv.service >/dev/null 2>&1 || true
+    manage_mpv_service start
 
     /usr/bin/mpv --fullscreen --geometry=640x480 --hwdec=auto --vo=drm --input-ipc-server="$MPV_SOCKET" "$url" >/dev/null 2>&1
 
-    systemctl stop mpv.service >/dev/null 2>&1 || true
+    manage_mpv_service stop
 
     ExitMenu
 }
 
 show_channel_menu() {
     check_and_install_dependencies
-    check_json_file
+    while true; do
+        check_json_file
+        load_channels
 
-    load_channels
+        local choice dialog_status
+        set +e
+        choice=$(dialog --output-fd 1 \
+            --backtitle "ArkTV by AeolusUX v1.0" \
+            --title "Select Channel" \
+            --menu "Choose a channel to play:" 18 65 12 \
+            "${CHANNEL_MENU_OPTIONS[@]}" \
+            2>"$CURR_TTY")
+        dialog_status=$?
+        set -e
 
-    local choice
-    choice=$(dialog --output-fd 1 \
-        --backtitle "ArkTV by AeolusUX v1.0" \
-        --title "Select Channel" \
-        --menu "Choose a channel to play:" 15 60 10 \
-        "${CHANNEL_MENU_OPTIONS[@]}" \
-        2>"$CURR_TTY")
+        if (( dialog_status != 0 )) || [[ -z "$choice" || "$choice" == "0" ]]; then
+            ExitMenu
+        fi
 
-    if [[ -z "$choice" || "$choice" == "0" ]]; then
-        ExitMenu
-    fi
-
-    play_channel "$choice"
+        case "$choice" in
+            IMPORT)
+                import_playlist_dialog
+                ;;
+            RESET)
+                restore_default_playlist
+                ;;
+            *)
+                if [[ -n "${CHANNELS[$choice]-}" ]]; then
+                    play_channel "$choice"
+                else
+                    dialog --msgbox "Opção inválida selecionada." 5 45 > "$CURR_TTY"
+                fi
+                ;;
+        esac
+    done
 }
 
 # --- Main execution ---
 
-trap ExitMenu EXIT SIGINT SIGTERM
+use_default_channel_list
 
-printf "\033c" > "$CURR_TTY"
-printf "\e[?25l" > "$CURR_TTY" # Hide cursor
+trap cleanup EXIT SIGINT SIGTERM
+
+if [[ -w "$CURR_TTY" ]]; then
+    printf "\033c" > "$CURR_TTY"
+    printf "\e[?25l" > "$CURR_TTY" # Hide cursor
+fi
 
 export TERM=linux
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 
 if [[ ! -e "/dev/input/by-path/platform-odroidgo2-joypad-event-joystick" ]]; then
-    setfont /usr/share/consolefonts/Lat7-TerminusBold22x11.psf.gz
+    [[ -f /usr/share/consolefonts/Lat7-TerminusBold22x11.psf.gz ]] && setfont /usr/share/consolefonts/Lat7-TerminusBold22x11.psf.gz
 else
-    setfont /usr/share/consolefonts/Lat7-Terminus16.psf
+    [[ -f /usr/share/consolefonts/Lat7-Terminus16.psf ]] && setfont /usr/share/consolefonts/Lat7-Terminus16.psf
 fi
 
 # Joystick support setup
 if command -v /opt/inttools/gptokeyb &>/dev/null; then
     [[ -e /dev/uinput ]] && chmod 666 /dev/uinput 2>/dev/null || true
     export SDL_GAMECONTROLLERCONFIG_FILE="/opt/inttools/gamecontrollerdb.txt"
-    pkill -f "gptokeyb -1 arktv.sh" || true
+    pkill -f "gptokeyb -1 ArkTV.sh" >/dev/null 2>&1 || pkill -f "gptokeyb -1 arktv.sh" >/dev/null 2>&1 || true
     /opt/inttools/gptokeyb -1 "ArkTV.sh" -c "/opt/inttools/keys.gptk" >/dev/null 2>&1 &
 else
     dialog --infobox "gptokeyb not found. Joystick control disabled." 5 65 > "$CURR_TTY"
