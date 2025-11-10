@@ -19,6 +19,7 @@ jq -e '
     (.[0].url | startswith("https://")) and
     .[0].group == "News" and
     .[1].name == "Sample Sports" and
+    (.[1].url | startswith("https://")) and
     .[1].group == "Sports"
 ' "$OUTPUT_JSON" >/dev/null
 

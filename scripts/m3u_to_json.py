@@ -181,7 +181,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         save_output(channels, args.output)
     except M3UParserError as exc:
         parser.error(str(exc))
-        return 1
     return 0
 
 
