@@ -12,7 +12,8 @@ fi
 set -euo pipefail
 
 # --- Global Variables ---
-CURR_TTY="$(/usr/bin/tty 2>/dev/null || echo /dev/tty1)"
+CURR_TTY=""
+TTY_CANDIDATES=("/dev/tty1" "/dev/tty0" "/dev/tty")
 MPV_SOCKET="/tmp/mpvsocket"
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 DEFAULT_JSON_URL="https://raw.githubusercontent.com/AeolusUX/ArkTV/refs/heads/main/channels/channels.json"
@@ -23,10 +24,40 @@ CLEANED_UP=0
 
 # --- Functions ---
 
+resolve_tty() {
+    local candidate detected
+
+    if detected="$(/usr/bin/tty 2>/dev/null)" && [[ -n "$detected" && -w "$detected" ]]; then
+        CURR_TTY="$detected"
+        return 0
+    fi
+
+    for candidate in "${TTY_CANDIDATES[@]}"; do
+        if [[ -c "$candidate" && -w "$candidate" ]]; then
+            CURR_TTY="$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 use_default_channel_list() {
     CHANNEL_SOURCE="remote"
     JSON_URL="$DEFAULT_JSON_URL"
     JSON_FILE=""
+}
+
+initialize_terminal() {
+    if ! resolve_tty; then
+        echo "ArkTV: nenhum terminal disponível. Execute a partir do EmulationStation ou de um console." >&2
+        exit 1
+    fi
+
+    if [[ -w "$CURR_TTY" ]]; then
+        printf "\033c" > "$CURR_TTY"
+        printf "\e[?25l" > "$CURR_TTY" # Hide cursor
+    fi
 }
 
 cleanup() {
@@ -141,18 +172,52 @@ trim_string() {
     printf '%s' "$value"
 }
 
-import_playlist_dialog() {
-    local playlist_url status
-    set +e
-    playlist_url=$(dialog --inputbox "Informe a URL da playlist M3U/M3U8:" 10 70 2>"$CURR_TTY")
-    status=$?
-    set -e
+find_osk_binary() {
+    local candidates=(
+        "/opt/inttools/osk"
+        "/opt/inttools/osk-sdl"
+        "/opt/inttools/osk-sdl2"
+        "/usr/local/bin/osk"
+        "osk"
+        "osk-sdl"
+        "osk-sdl2"
+    )
 
-    if (( status != 0 )); then
+    local candidate resolved
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+        if resolved="$(command -v "$candidate" 2>/dev/null)"; then
+            printf '%s' "$resolved"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+prompt_with_osk() {
+    local prompt="$1"
+    local osk_binary
+
+    if ! osk_binary="$(find_osk_binary)"; then
         return 1
     fi
 
-    playlist_url="$(trim_string "$playlist_url")"
+    LD_LIBRARY_PATH=/usr/local/bin "$osk_binary" "$prompt" 2>/dev/null | tail -n 1
+}
+
+import_playlist_dialog() {
+    local playlist_url osk_output
+
+    if ! osk_output="$(prompt_with_osk "Informe a URL da playlist M3U/M3U8.")"; then
+        dialog --msgbox "Teclado virtual indisponível. Não foi possível solicitar a URL." 7 60 > "$CURR_TTY"
+        return 1
+    fi
+
+    playlist_url="$(trim_string "$osk_output")"
 
     if [[ -z "$playlist_url" ]]; then
         dialog --msgbox "Nenhuma URL informada." 6 50 > "$CURR_TTY"
@@ -204,7 +269,7 @@ load_channels() {
     declare -gA CHANNELS
     CHANNEL_MENU_OPTIONS=()
 
-    CHANNEL_MENU_OPTIONS+=("IMPORT" "Importar playlist M3U")
+    CHANNEL_MENU_OPTIONS+=("IMPORT" "Import playlist M3U")
     if [[ "$CHANNEL_SOURCE" == "custom" ]]; then
         CHANNEL_MENU_OPTIONS+=("RESET" "Voltar à lista padrão")
     fi
@@ -292,12 +357,9 @@ show_channel_menu() {
 
 use_default_channel_list
 
-trap cleanup EXIT SIGINT SIGTERM
+initialize_terminal
 
-if [[ -w "$CURR_TTY" ]]; then
-    printf "\033c" > "$CURR_TTY"
-    printf "\e[?25l" > "$CURR_TTY" # Hide cursor
-fi
+trap cleanup EXIT SIGINT SIGTERM
 
 export TERM=linux
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
