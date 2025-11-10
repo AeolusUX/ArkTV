@@ -19,7 +19,7 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 DEFAULT_JSON_URL="https://raw.githubusercontent.com/AeolusUX/ArkTV/refs/heads/main/channels/channels.json"
 JSON_URL="$DEFAULT_JSON_URL"
 JSON_FILE=""
-CUSTOM_JSON_PATH="/tmp/arktv_custom_channels.json"
+CUSTOM_JSON_PATH="$SCRIPT_DIR/channels/arktv_custom_channels.json"
 CLEANED_UP=0
 
 # --- Functions ---
@@ -46,6 +46,13 @@ use_default_channel_list() {
     CHANNEL_SOURCE="remote"
     JSON_URL="$DEFAULT_JSON_URL"
     JSON_FILE=""
+}
+
+prefer_custom_channel_list() {
+    if [[ -s "$CUSTOM_JSON_PATH" ]]; then
+        CHANNEL_SOURCE="custom"
+        JSON_FILE="$CUSTOM_JSON_PATH"
+    fi
 }
 
 initialize_terminal() {
@@ -227,6 +234,7 @@ import_playlist_dialog() {
     dialog --infobox "Importando playlist...\nIsso pode levar alguns segundos." 5 60 > "$CURR_TTY"
 
     local output
+    mkdir -p "$(dirname "$CUSTOM_JSON_PATH")"
     if ! output="$(python3 "$SCRIPT_DIR/scripts/m3u_to_json.py" "$playlist_url" -o "$CUSTOM_JSON_PATH" 2>&1)"; then
         dialog --msgbox "Erro ao importar playlist:\n${output}" 8 60 > "$CURR_TTY"
         return 1
@@ -241,6 +249,7 @@ import_playlist_dialog() {
 
 restore_default_playlist() {
     use_default_channel_list
+    rm -f "$CUSTOM_JSON_PATH"
     dialog --msgbox "Lista padrão restaurada." 5 45 > "$CURR_TTY"
 }
 
@@ -356,6 +365,8 @@ show_channel_menu() {
 # --- Main execution ---
 
 use_default_channel_list
+
+prefer_custom_channel_list
 
 initialize_terminal
 

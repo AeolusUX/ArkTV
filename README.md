@@ -9,7 +9,7 @@ ArkTV is a lightweight, terminal-first IPTV player for handhelds and embedded Li
 - Automatic dependency check and optional `apt` install for `mpv`, `dialog`, `jq`, `curl`, and `python3`.
 - Remote channel list fetched from `channels/channels.json` in the main branch (validated before use).
 - Built-in joystick support via `gptokeyb`, including automatic `/dev/uinput` permissions and controller mappings.
-- On-device M3U/M3U8 import powered by `scripts/m3u_to_json.py`, which converts playlists into `/tmp/arktv_custom_channels.json` and replaces the active list instantly.
+- On-device M3U/M3U8 import powered by `scripts/m3u_to_json.py`, which converts playlists into `channels/arktv_custom_channels.json` (persistente) e substitui a lista ativa imediatamente.
 - Graceful cleanup that restores terminal state, fonts, and the `mpv.service` unit when you exit.
 
 > **Heads-up about the on-screen keyboard (OSK):** when entering very long URLs the OSK confirm/cancel buttons may slide off the bottom of the screen. If that happens, shorten the URL (use a URL shortener) or rely on a local file path instead.
@@ -32,8 +32,8 @@ ArkTV is a lightweight, terminal-first IPTV player for handhelds and embedded Li
 1. Run `ArkTV.sh`.
 2. Choose `Import playlist M3U` from the main menu.
 3. Supply an HTTP/HTTPS URL or a local path to a `.m3u`/`.m3u8` file. ArkTV uses the OSK when available and falls back to dialog input otherwise.
-4. The Python helper downloads (if necessary), validates `#EXTM3U/#EXTINF`, and writes the converted JSON to `/tmp/arktv_custom_channels.json`.
-5. The imported list replaces the default source immediately. Pick `Reset to default list` to revert to the official JSON.
+4. The Python helper downloads (if necessary), validates `#EXTM3U/#EXTINF`, and writes the converted JSON to `channels/arktv_custom_channels.json`.
+5. A playlist import passa a ser a lista padrão automaticamente nas próximas execuções (o arquivo é mantido em `channels/`). Use `Reset to default list` para remover o cache persistente e voltar ao JSON oficial.
 
 Tip: `tests/validate_m3u.sh` demonstrates the conversion flow using `channels/sample_playlist.m3u`.
 
@@ -74,7 +74,7 @@ ArkTV downloads the JSON with `curl -fsSL`, verifies the schema with `jq`, and r
 - The script expects to run in a TTY. If no writable TTY is detected ArkTV exits with a helpful message.
 - `scripts/m3u_to_json.py` accepts both URLs and local paths and can be used standalone:
   ```bash
-  python3 scripts/m3u_to_json.py https://example.com/list.m3u -o /tmp/arktv_custom_channels.json
+  python3 scripts/m3u_to_json.py https://example.com/list.m3u -o channels/arktv_custom_channels.json
   ```
 - To run the sample validation workflow:
   ```bash
